@@ -230,6 +230,126 @@ function convertBlockHtmlToMarkdown(html) {
   return markdown.trim()
 }
 
+function getSectionPath(headingStack) {
+  const activeHeadings = headingStack.filter(Boolean)
+  return activeHeadings.length > 0 ? activeHeadings.join(' > ') : 'Document opening'
+}
+
+function detectMarkdownBlockType(segment) {
+  const trimmedSegment = segment.trim()
+
+  if (/^#{1,6}\s+/.test(trimmedSegment)) {
+    return 'heading'
+  }
+
+  if (/^\|/.test(trimmedSegment)) {
+    return 'table'
+  }
+
+  if (/^[-*+]\s+/.test(trimmedSegment) || /^\d+\.\s+/.test(trimmedSegment)) {
+    return 'list'
+  }
+
+  if (/^\[IMAGE_\d+\]$/.test(trimmedSegment)) {
+    return 'image'
+  }
+
+  return 'paragraph'
+}
+
+function normalizeMarkdownBlockText(segment, blockType) {
+  if (blockType === 'table') {
+    const tableSeparatorPattern = /^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/
+    const rows = segment
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !tableSeparatorPattern.test(line))
+      .map((line) =>
+        line
+          .split('|')
+          .map((cell) => cell.trim())
+          .filter(Boolean)
+          .join(' | ')
+      )
+
+    return rows.join(' / ').trim()
+  }
+
+  const normalizedLines = segment
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/^#{1,6}\s+/, '')
+        .replace(/^[-*+]\s+/, '')
+        .replace(/^\d+\.\s+/, '')
+        .trim()
+    )
+    .filter(Boolean)
+
+  const lineJoiner = blockType === 'list' ? ' / ' : ' '
+
+  return normalizedLines
+    .join(lineJoiner)
+    .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+    .replace(/\[IMAGE_\d+\]/g, '[Image]')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+function buildBlocksFromMarkdown(markdown) {
+  const segments = (markdown ?? '')
+    .split(/\n{2,}/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+
+  const headingStack = []
+  const blocks = []
+  let blockIndex = 1
+
+  for (const segment of segments) {
+    const blockType = detectMarkdownBlockType(segment)
+
+    if (blockType === 'heading') {
+      const headingMatch = segment.match(/^(#{1,6})\s+(.+)$/)
+      const headingLevel = headingMatch ? headingMatch[1].length : 1
+      const headingText = normalizeMarkdownBlockText(segment, 'heading')
+
+      headingStack[headingLevel - 1] = headingText
+      headingStack.length = headingLevel
+
+      blocks.push({
+        id: `p${blockIndex}`,
+        type: 'heading',
+        section: getSectionPath(headingStack),
+        text: headingText,
+        markdown: segment
+      })
+      blockIndex += 1
+      continue
+    }
+
+    const text = normalizeMarkdownBlockText(segment, blockType)
+
+    if (!text && blockType !== 'image') {
+      continue
+    }
+
+    blocks.push({
+      id: `p${blockIndex}`,
+      type: blockType,
+      section: getSectionPath(headingStack),
+      text: text || '[Image]',
+      markdown: segment
+    })
+    blockIndex += 1
+  }
+
+  return blocks
+}
+
 export async function parseDocx(filePath) {
   const images = []
 
@@ -262,8 +382,11 @@ export async function parseDocx(filePath) {
     }
   )
 
+  const markdown = convertBlockHtmlToMarkdown(result.value)
+
   return {
-    markdown: convertBlockHtmlToMarkdown(result.value),
+    markdown,
+    blocks: buildBlocksFromMarkdown(markdown),
     images
   }
 }

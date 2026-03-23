@@ -6,8 +6,14 @@ const MAX_ANALYSIS_ATTEMPTS = 2
 const RETRY_DELAY_MS = 1_500
 const PRIMARY_MODEL = 'gpt-5.4-mini'
 const FALLBACK_MODEL = 'gpt-5-mini'
+const TEACHER_TEMPERATURE = 0
+const WORD_COUNT_TEMPERATURE = 0.2
+const TEACHER_MAX_COMPLETION_TOKENS = 2600
+const WORD_COUNT_MAX_COMPLETION_TOKENS = 2000
 
 const TEACHER_MODE_PROMPT = `You are an experienced academic marker. You will be given assessment criteria and a student's written assessment. Analyse how well the student's work addresses each criteria point.
+
+You will also be given a STUDENT DOCUMENT BLOCK MAP so you can point to where improvements are needed in the student's draft.
 
 Return ONLY valid JSON in this exact structure, with no other text:
 {
@@ -19,11 +25,22 @@ Return ONLY valid JSON in this exact structure, with no other text:
       "coverage": "strong | adequate | weak | missing",
       "priority": 1,
       "feedback": "specific actionable feedback",
-      "focus_suggestion": "what to do to improve"
+      "focus_suggestion": "what to do to improve",
+      "document_reference": {
+        "section": "string",
+        "block_id": "p1",
+        "quote": "short exact excerpt from the student's assessment"
+      }
     }
   ],
   "top_3_priorities": ["string", "string", "string"]
 }
+
+Requirements:
+- Use block IDs from the STUDENT DOCUMENT BLOCK MAP exactly.
+- Keep the quote short and exact.
+- If a criterion is missing, cite the closest relevant block and explain the gap.
+- Keep feedback actionable and reasonably concise.
 
 Do not include markdown fences, commentary, or any keys outside this structure.`
 
@@ -103,7 +120,60 @@ function buildAssessmentContent(assessmentDoc) {
   return content
 }
 
+function truncateBlockMapText(text, maxLength = 180) {
+  const normalizedText = `${text ?? ''}`.replace(/\s{2,}/g, ' ').trim()
+
+  if (normalizedText.length <= maxLength) {
+    return normalizedText
+  }
+
+  return `${normalizedText.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+function buildAssessmentBlockMapText(assessmentDoc) {
+  const blocks = assessmentDoc?.blocks ?? []
+
+  if (blocks.length === 0) {
+    return 'STUDENT DOCUMENT BLOCK MAP:\nNo block references were generated.'
+  }
+
+  const lines = [
+    'STUDENT DOCUMENT BLOCK MAP:',
+    'Use these block IDs exactly when citing where improvements are needed.'
+  ]
+
+  for (const block of blocks) {
+    lines.push(
+      `[${block.id}] Section: ${block.section}`,
+      `Type: ${block.type}`,
+      `Excerpt: ${truncateBlockMapText(block.text)}`,
+      ''
+    )
+  }
+
+  return lines.join('\n')
+}
+
 function buildMessages(criteriaDoc, assessmentDoc, mode) {
+  const userContent = [
+    {
+      type: 'text',
+      text: `ASSESSMENT CRITERIA:\n${criteriaDoc?.markdown ?? ''}`
+    },
+    {
+      type: 'text',
+      text: 'STUDENT ASSESSMENT:'
+    },
+    ...buildAssessmentContent(assessmentDoc)
+  ]
+
+  if (mode === 'teacher') {
+    userContent.push({
+      type: 'text',
+      text: buildAssessmentBlockMapText(assessmentDoc)
+    })
+  }
+
   return [
     {
       role: 'system',
@@ -111,19 +181,23 @@ function buildMessages(criteriaDoc, assessmentDoc, mode) {
     },
     {
       role: 'user',
-      content: [
-        {
-          type: 'text',
-          text: `ASSESSMENT CRITERIA:\n${criteriaDoc?.markdown ?? ''}`
-        },
-        {
-          type: 'text',
-          text: 'STUDENT ASSESSMENT:'
-        },
-        ...buildAssessmentContent(assessmentDoc)
-      ]
+      content: userContent
     }
   ]
+}
+
+function getRequestSettings(mode) {
+  if (mode === 'teacher') {
+    return {
+      temperature: TEACHER_TEMPERATURE,
+      maxCompletionTokens: TEACHER_MAX_COMPLETION_TOKENS
+    }
+  }
+
+  return {
+    temperature: WORD_COUNT_TEMPERATURE,
+    maxCompletionTokens: WORD_COUNT_MAX_COMPLETION_TOKENS
+  }
 }
 
 function requestChatCompletion(apiKey, payload) {
@@ -262,7 +336,7 @@ function extractResponseText(responseBody) {
 }
 
 function parseJsonText(text) {
-  const trimmedText = text.trim()
+  const trimmedText = `${text ?? ''}`.trim()
   const normalizedText = trimmedText.replace(/^```json\s*|^```\s*|```$/gim, '').trim()
 
   try {
@@ -279,7 +353,11 @@ function validateTeacherResult(result) {
     typeof entry.coverage === 'string' &&
     Number.isInteger(entry.priority) &&
     typeof entry.feedback === 'string' &&
-    typeof entry.focus_suggestion === 'string'
+    typeof entry.focus_suggestion === 'string' &&
+    entry.document_reference &&
+    typeof entry.document_reference.section === 'string' &&
+    typeof entry.document_reference.block_id === 'string' &&
+    typeof entry.document_reference.quote === 'string'
   )
 
   if (
@@ -329,6 +407,7 @@ function validateAnalysisResult(result, mode) {
 
 async function requestAnalysis(criteriaDoc, assessmentDoc, mode, model) {
   const apiKey = await loadAPIKey()
+  const requestSettings = getRequestSettings(mode)
 
   if (!apiKey) {
     throw createServiceError('NO_API_KEY')
@@ -336,8 +415,8 @@ async function requestAnalysis(criteriaDoc, assessmentDoc, mode, model) {
 
   const responseBody = await requestChatCompletion(apiKey, {
     model,
-    temperature: 0.2,
-    max_completion_tokens: 2000,
+    temperature: requestSettings.temperature,
+    max_completion_tokens: requestSettings.maxCompletionTokens,
     messages: buildMessages(criteriaDoc, assessmentDoc, mode)
   })
 

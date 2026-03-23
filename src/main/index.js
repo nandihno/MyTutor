@@ -2,6 +2,12 @@ import path from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { analyseAssessment } from './aiService.js'
+import {
+  deleteResult,
+  listHistory,
+  loadResult,
+  saveResult
+} from './historyStore.js'
 import { saveAPIKey, loadAPIKey, deleteAPIKey, hasAPIKey } from './keystore.js'
 import { parseDocx } from './parser.js'
 
@@ -56,17 +62,19 @@ function registerIPCHandlers() {
     if (typeof filePath !== 'string' || filePath.trim() === '') {
       return {
         markdown: '',
+        blocks: [],
         images: [],
         error: 'A valid .docx file path is required.'
       }
     }
 
     try {
-      const { markdown, images } = await parseDocx(filePath)
-      return { markdown, images }
+      const { markdown, blocks, images } = await parseDocx(filePath)
+      return { markdown, blocks, images }
     } catch (error) {
       return {
         markdown: '',
+        blocks: [],
         images: [],
         error: error.message
       }
@@ -87,7 +95,7 @@ function registerIPCHandlers() {
     }
   })
 
-  ipcMain.handle('report:exportPDF', async (event) => {
+  ipcMain.handle('report:exportPDF', async (event, payload) => {
     const browserWindow = BrowserWindow.fromWebContents(event.sender) || mainWindow
 
     if (!browserWindow) {
@@ -95,9 +103,15 @@ function registerIPCHandlers() {
     }
 
     try {
+      const reportType = payload?.reportType === 'wordCount' ? 'wordCount' : 'teacher'
+      const reportTitle = reportType === 'wordCount' ? 'word count report' : 'teacher report'
+      const defaultFileName = reportType === 'wordCount'
+        ? 'MyTutor-Word-Count-Report.pdf'
+        : 'MyTutor-Teacher-Report.pdf'
+
       const saveResult = await dialog.showSaveDialog(browserWindow, {
-        title: 'Export teacher report as PDF',
-        defaultPath: path.join(app.getPath('documents'), 'MyTutor-Teacher-Report.pdf'),
+        title: `Export ${reportTitle} as PDF`,
+        defaultPath: path.join(app.getPath('documents'), defaultFileName),
         filters: [{ name: 'PDF Document', extensions: ['pdf'] }]
       })
 
@@ -120,6 +134,48 @@ function registerIPCHandlers() {
         success: false,
         error: error.message
       }
+    }
+  })
+
+  ipcMain.handle('history:save', async (_event, payload) => {
+    try {
+      const id = await saveResult(
+        payload?.result,
+        payload?.criteriaFileName,
+        payload?.assessmentFileName,
+        payload?.mode
+      )
+
+      return { id }
+    } catch (error) {
+      return { error: error.message }
+    }
+  })
+
+  ipcMain.handle('history:list', async () => {
+    try {
+      const items = await listHistory()
+      return { items }
+    } catch (error) {
+      return { items: [], error: error.message }
+    }
+  })
+
+  ipcMain.handle('history:load', async (_event, id) => {
+    try {
+      const result = await loadResult(id)
+      return { result }
+    } catch (error) {
+      return { error: error.message }
+    }
+  })
+
+  ipcMain.handle('history:delete', async (_event, id) => {
+    try {
+      await deleteResult(id)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error.message }
     }
   })
 }

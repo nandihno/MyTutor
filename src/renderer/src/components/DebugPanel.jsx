@@ -44,6 +44,7 @@ export default function DebugPanel({
             <span>Selected file: {criteriaFile.name || 'None selected'}</span>
             <span>Criteria images: {criteriaDoc?.images?.length ?? 0}</span>
             <span>Assessment images: {assessmentDoc?.images?.length ?? 0}</span>
+            <span>Assessment blocks: {assessmentDoc?.blocks?.length ?? 0}</span>
             <span>Tokens: {placeholderTokens.length > 0 ? placeholderTokens.join(', ') : 'None'}</span>
           </div>
 

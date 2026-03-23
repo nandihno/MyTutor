@@ -48,6 +48,25 @@ function getCoverageStyle(coverage) {
   }
 }
 
+function renderDocumentReference(documentReference) {
+  if (!documentReference) {
+    return null
+  }
+
+  return (
+    <div className="document-reference">
+      <p className="document-reference-label">Where this appears in your draft</p>
+      <div className="document-reference-meta">
+        <span>{documentReference.section}</span>
+        <span>{documentReference.block_id}</span>
+      </div>
+      <blockquote className="document-reference-quote">
+        &ldquo;{documentReference.quote}&rdquo;
+      </blockquote>
+    </div>
+  )
+}
+
 export default function TeacherReport({
   teacherReport,
   onExportPDF,
@@ -152,6 +171,8 @@ export default function TeacherReport({
                 </div>
 
                 <p className="criteria-feedback">{item.feedback}</p>
+
+                {renderDocumentReference(item.document_reference)}
 
                 <div className="focus-callout">
                   <p className="focus-callout-label">Focus suggestion</p>

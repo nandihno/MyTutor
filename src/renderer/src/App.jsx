@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import DebugPanel from './components/DebugPanel'
+import History from './components/History'
 import Settings from './components/Settings'
 import TeacherReport from './components/TeacherReport'
+import WordCountReport from './components/WordCountReport'
 
 const MODES = [
   {
@@ -48,6 +50,14 @@ function getAnalysisMode(mode) {
   return mode
 }
 
+function getUiMode(mode) {
+  if (mode === 'wordCount') {
+    return 'word-count'
+  }
+
+  return mode
+}
+
 function formatDirectionLabel(direction) {
   switch (direction) {
     case 'on_track':
@@ -69,6 +79,15 @@ function formatCoverageLabel(coverage) {
   return coverage.charAt(0).toUpperCase() + coverage.slice(1)
 }
 
+function buildDocumentReferenceText(documentReference) {
+  if (!documentReference) {
+    return 'Reference: Not available'
+  }
+
+  return `Reference: ${documentReference.section} (${documentReference.block_id})
+Quote: "${documentReference.quote}"`
+}
+
 function buildTeacherReportText(teacherReport) {
   const sortedCriteria = [...(teacherReport.criteria_analysis ?? [])].sort(
     (left, right) => left.priority - right.priority
@@ -84,7 +103,8 @@ function buildTeacherReportText(teacherReport) {
 Coverage: ${formatCoverageLabel(item.coverage)}
 Priority: ${item.priority}
 Feedback: ${item.feedback}
-Focus suggestion: ${item.focus_suggestion}`
+Focus suggestion: ${item.focus_suggestion}
+${buildDocumentReferenceText(item.document_reference)}`
     )
     .join('\n\n')
 
@@ -100,6 +120,43 @@ ${priorityText}
 
 Criteria Analysis:
 ${criteriaText}`
+}
+
+function formatWordCount(value) {
+  return new Intl.NumberFormat('en-US').format(value ?? 0)
+}
+
+function formatRecommendationLabel(recommendation) {
+  switch (recommendation) {
+    case 'reduce':
+      return 'Reduce'
+    case 'expand':
+      return 'Expand'
+    default:
+      return 'Good'
+  }
+}
+
+function buildWordCountReportText(wordCountReport) {
+  const sectionsText = (wordCountReport.sections ?? [])
+    .map(
+      (section) =>
+        `${section.section_title}
+Recommendation: ${formatRecommendationLabel(section.recommendation)}
+Word count: ${formatWordCount(section.current_words)} words -> ${formatWordCount(section.suggested_words)} suggested
+Reasoning: ${section.reasoning}`
+    )
+    .join('\n\n')
+
+  return `MyTutor Word Count Report
+
+Total current word count: ${formatWordCount(wordCountReport.overall_word_count)}
+
+Summary:
+${wordCountReport.summary}
+
+Sections:
+${sectionsText}`
 }
 
 async function copyTextToClipboard(text) {
@@ -126,6 +183,7 @@ async function copyTextToClipboard(text) {
 
 export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [hasKey, setHasKey] = useState(false)
   const [isLoadingKeyState, setIsLoadingKeyState] = useState(true)
   const [selectedMode, setSelectedMode] = useState('')
@@ -140,6 +198,11 @@ export default function App() {
   const [isExportingPDF, setIsExportingPDF] = useState(false)
   const [reportActionMessage, setReportActionMessage] = useState('')
   const [reportActionError, setReportActionError] = useState('')
+  const [historyItems, setHistoryItems] = useState([])
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false)
+  const [historyErrorMessage, setHistoryErrorMessage] = useState('')
+  const [loadingHistoryId, setLoadingHistoryId] = useState('')
+  const [deletingHistoryId, setDeletingHistoryId] = useState('')
 
   useEffect(() => {
     let isActive = true
@@ -172,9 +235,18 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (isHistoryOpen) {
+      refreshHistoryList()
+    }
+  }, [isHistoryOpen])
+
+  const analysisMode = getAnalysisMode(selectedMode)
   const areFilesReady = Boolean(selectedFiles.criteria.path && selectedFiles.assessment.path)
   const isAnalysisDisabled = isLoadingKeyState || isAnalysing || !selectedMode || !areFilesReady || !hasKey
-  const isTeacherReportVisible = selectedMode === 'teacher' && Boolean(analysisResult)
+  const isTeacherReportVisible = analysisMode === 'teacher' && Boolean(analysisResult)
+  const isWordCountReportVisible = analysisMode === 'wordCount' && Boolean(analysisResult)
+  const isReportVisible = isTeacherReportVisible || isWordCountReportVisible
 
   function clearAnalysisOutput() {
     setCriteriaDoc(null)
@@ -184,6 +256,32 @@ export default function App() {
     setErrorMessage('')
     setReportActionMessage('')
     setReportActionError('')
+  }
+
+  async function refreshHistoryList(options = {}) {
+    const { silent = false } = options
+
+    if (!silent) {
+      setIsHistoryLoading(true)
+    }
+
+    setHistoryErrorMessage('')
+
+    try {
+      const response = await window.api.listHistory()
+
+      if (response.error) {
+        throw new Error(response.error)
+      }
+
+      setHistoryItems(response.items ?? [])
+    } catch (error) {
+      setHistoryErrorMessage(`Could not load history. ${error.message}`)
+    } finally {
+      if (!silent) {
+        setIsHistoryLoading(false)
+      }
+    }
   }
 
   function handleModeSelect(modeId) {
@@ -222,6 +320,7 @@ export default function App() {
 
   function handleNewAnalysis() {
     setIsSettingsOpen(false)
+    setIsHistoryOpen(false)
     setSelectedMode('')
     setSelectedFiles(createEmptySelections())
     setLoadingMessage('')
@@ -236,7 +335,7 @@ export default function App() {
     setIsExportingPDF(true)
 
     try {
-      const exportResult = await window.api.exportPDF()
+      const exportResult = await window.api.exportPDF(analysisMode)
 
       if (exportResult?.cancelled) {
         return
@@ -263,10 +362,72 @@ export default function App() {
     setReportActionError('')
 
     try {
-      await copyTextToClipboard(buildTeacherReportText(analysisResult))
-      setReportActionMessage('Teacher report copied to the clipboard.')
+      const reportText = analysisMode === 'wordCount'
+        ? buildWordCountReportText(analysisResult)
+        : buildTeacherReportText(analysisResult)
+
+      await copyTextToClipboard(reportText)
+      setReportActionMessage('Report copied to the clipboard.')
     } catch (error) {
       setReportActionError(`Could not copy report. ${error.message}`)
+    }
+  }
+
+  async function handleOpenHistoryEntry(item) {
+    setHistoryErrorMessage('')
+    setLoadingHistoryId(item.id)
+
+    try {
+      const response = await window.api.loadHistory(item.id)
+
+      if (response.error) {
+        throw new Error(response.error)
+      }
+
+      setIsHistoryOpen(false)
+      setSelectedMode(getUiMode(item.mode))
+      setSelectedFiles({
+        criteria: { path: '', name: item.criteriaFileName },
+        assessment: { path: '', name: item.assessmentFileName }
+      })
+      setCriteriaDoc(null)
+      setAssessmentDoc(null)
+      setAnalysisResult(response.result)
+      setSuccessMessage('')
+      setErrorMessage('')
+      setReportActionMessage('')
+      setReportActionError('')
+    } catch (error) {
+      setHistoryErrorMessage(`Could not open this report. ${error.message}`)
+    } finally {
+      setLoadingHistoryId('')
+    }
+  }
+
+  async function handleDeleteHistoryEntry(item) {
+    const confirmed = window.confirm(
+      `Delete the saved ${item.mode === 'wordCount' ? 'Word Count' : 'Teacher'} report for "${item.assessmentFileName}"?`
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    setHistoryErrorMessage('')
+    setDeletingHistoryId(item.id)
+
+    try {
+      const response = await window.api.deleteHistory(item.id)
+
+      if (!response.success) {
+        throw new Error(response.error || 'Delete failed.')
+      }
+
+      await refreshHistoryList({ silent: false })
+    } catch (error) {
+      setHistoryErrorMessage(`Could not delete this report. ${error.message}`)
+    } finally {
+      setDeletingHistoryId('')
     }
   }
 
@@ -294,6 +455,7 @@ export default function App() {
 
       const normalizedCriteriaDoc = {
         markdown: nextCriteriaDoc.markdown,
+        blocks: nextCriteriaDoc.blocks ?? [],
         images: nextCriteriaDoc.images
       }
 
@@ -308,6 +470,7 @@ export default function App() {
 
       const normalizedAssessmentDoc = {
         markdown: nextAssessmentDoc.markdown,
+        blocks: nextAssessmentDoc.blocks ?? [],
         images: nextAssessmentDoc.images
       }
 
@@ -317,15 +480,29 @@ export default function App() {
       const analysisResponse = await window.api.analyseAssessment(
         normalizedCriteriaDoc,
         normalizedAssessmentDoc,
-        getAnalysisMode(selectedMode)
+        analysisMode
       )
 
       if (analysisResponse.error) {
         throw new Error(getFriendlyErrorMessage(analysisResponse.error))
       }
 
+      const historySaveResponse = await window.api.saveHistory(
+        analysisResponse.result,
+        selectedFiles.criteria.name,
+        selectedFiles.assessment.name,
+        analysisMode
+      )
+
+      if (historySaveResponse.error) {
+        setReportActionError('Analysis completed, but the result could not be saved to history.')
+      } else {
+        setReportActionError('')
+        await refreshHistoryList({ silent: true })
+      }
+
       setAnalysisResult(analysisResponse.result)
-      setSuccessMessage(selectedMode === 'teacher' ? '' : 'Analysis complete')
+      setSuccessMessage('')
       console.log('Analysis result', analysisResponse.result)
     } catch (error) {
       setAnalysisResult(null)
@@ -338,21 +515,42 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell${isTeacherReportVisible ? ' has-report' : ''}`}>
-      {isTeacherReportVisible ? null : (
+    <main className={`app-shell${isReportVisible ? ' has-report' : ''}`}>
+      <div className="app-toolbar">
         <button
           type="button"
-          className="settings-trigger"
+          className="toolbar-trigger"
           disabled={isAnalysing}
-          onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
+          onClick={() => setIsHistoryOpen(true)}
         >
-          ⚙️ Settings
+          History
         </button>
-      )}
+
+        {isReportVisible ? null : (
+          <button
+            type="button"
+            className="toolbar-trigger"
+            disabled={isAnalysing}
+            onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
+          >
+            Settings
+          </button>
+        )}
+      </div>
 
       {isTeacherReportVisible ? (
         <TeacherReport
           teacherReport={analysisResult}
+          onExportPDF={handleExportPDF}
+          onCopyToClipboard={handleCopyTeacherReport}
+          onNewAnalysis={handleNewAnalysis}
+          isExportingPDF={isExportingPDF}
+          actionMessage={reportActionMessage}
+          actionError={reportActionError}
+        />
+      ) : isWordCountReportVisible ? (
+        <WordCountReport
+          wordCountReport={analysisResult}
           onExportPDF={handleExportPDF}
           onCopyToClipboard={handleCopyTeacherReport}
           onNewAnalysis={handleNewAnalysis}
@@ -439,6 +637,18 @@ export default function App() {
         hasKey={hasKey}
         onClose={() => setIsSettingsOpen(false)}
         onKeyStateChange={setHasKey}
+      />
+
+      <History
+        isOpen={isHistoryOpen}
+        items={historyItems}
+        isLoading={isHistoryLoading}
+        errorMessage={historyErrorMessage}
+        loadingEntryId={loadingHistoryId}
+        deletingEntryId={deletingHistoryId}
+        onClose={() => setIsHistoryOpen(false)}
+        onOpenEntry={handleOpenHistoryEntry}
+        onDeleteEntry={handleDeleteHistoryEntry}
       />
 
       <DebugPanel
