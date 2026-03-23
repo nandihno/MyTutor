@@ -1,0 +1,23 @@
+{
+  "name": "mytutor",
+  "version": "1.0.0",
+  "description": "AI-powered assessment assistant for students",
+  "license": "ISC",
+  "author": "",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "^41.0.3",
+    "electron-vite": "^4.0.0"
+  }
+}
