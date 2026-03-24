@@ -2,6 +2,7 @@ import path from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { analyseAssessment } from './aiService.js'
+import { validateDocxFile } from './fileValidation.js'
 import {
   deleteResult,
   listHistory,
@@ -9,15 +10,26 @@ import {
   saveResult
 } from './historyStore.js'
 import { saveAPIKey, loadAPIKey, deleteAPIKey, hasAPIKey } from './keystore.js'
+import { validateOpenAIAPIKey } from './openaiKeyValidation.js'
 import { parseDocx } from './parser.js'
+import { loadWindowState, saveWindowState } from './windowState.js'
 
 app.setName('MyTutor')
 let mainWindow = null
 
 function registerIPCHandlers() {
   ipcMain.handle('key:save', async (_event, key) => {
+    const validationResult = await validateOpenAIAPIKey(key)
+
+    if (!validationResult.valid) {
+      return {
+        success: false,
+        error: validationResult.error
+      }
+    }
+
     await saveAPIKey(key)
-    return { success: true }
+    return { success: true, verified: true }
   })
 
   ipcMain.handle('key:load', async () => {
@@ -55,6 +67,17 @@ function registerIPCHandlers() {
     return {
       filePath,
       fileName: path.basename(filePath)
+    }
+  })
+
+  ipcMain.handle('file:validate', async (_event, filePath) => {
+    try {
+      return await validateDocxFile(filePath)
+    } catch (error) {
+      return {
+        valid: false,
+        error: error.message
+      }
     }
   })
 
@@ -180,10 +203,38 @@ function registerIPCHandlers() {
   })
 }
 
-function createWindow() {
+function registerWindowShortcuts(browserWindow) {
+  browserWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || !(input.meta || input.control)) {
+      return
+    }
+
+    let action = ''
+
+    if (input.key === ',') {
+      action = 'open-settings'
+    } else if (input.key.toLowerCase() === 'n') {
+      action = 'new-analysis'
+    } else if (input.key.toLowerCase() === 'h') {
+      action = 'toggle-history'
+    }
+
+    if (!action) {
+      return
+    }
+
+    event.preventDefault()
+    browserWindow.webContents.send('shortcut:trigger', action)
+  })
+}
+
+async function createWindow() {
+  const windowState = await loadWindowState()
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    ...windowState,
+    width: windowState.width ?? 1200,
+    height: windowState.height ?? 800,
     minWidth: 900,
     minHeight: 600,
     webPreferences: {
@@ -193,12 +244,22 @@ function createWindow() {
     }
   })
 
+  if (windowState.isMaximized) {
+    mainWindow.maximize()
+  }
+
+  registerWindowShortcuts(mainWindow)
+
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
     mainWindow.webContents.openDevTools()
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  mainWindow.on('close', () => {
+    void saveWindowState(mainWindow)
+  })
 
   mainWindow.on('closed', () => {
     mainWindow = null

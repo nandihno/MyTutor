@@ -8,7 +8,10 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "bundle": "electron-vite build",
+    "build": "electron-vite build && electron-builder",
+    "build:mac": "electron-vite build && electron-builder --mac",
+    "build:win": "electron-vite build && electron-builder --win",
     "preview": "electron-vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -21,6 +24,51 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^5.1.0",
     "electron": "^41.0.3",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^4.0.0"
+  },
+  "build": {
+    "appId": "com.nando.mytutor",
+    "productName": "MyTutor",
+    "directories": {
+      "output": "dist-installer"
+    },
+    "files": [
+      "out/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "identity": null,
+      "singleArchFiles": "**/node_modules/@img/**",
+      "x64ArchFiles": "**/node_modules/@img/**",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "resources/icon.icns"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "dmg": {
+      "title": "MyTutor Installer",
+      "background": "resources/dmg-background.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

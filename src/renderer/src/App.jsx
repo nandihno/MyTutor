@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react'
-import DebugPanel from './components/DebugPanel'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import History from './components/History'
 import Settings from './components/Settings'
 import TeacherReport from './components/TeacherReport'
 import WordCountReport from './components/WordCountReport'
+
+const EMPTY_DOCUMENT_ERROR =
+  "This document appears to be empty or couldn't be read. Please check the file and try again."
+
+const DebugPanel = import.meta.env.DEV ? lazy(() => import('./components/DebugPanel')) : null
 
 const MODES = [
   {
@@ -25,6 +29,22 @@ function createEmptySelections() {
   }
 }
 
+function createEmptyValidation() {
+  return {
+    checked: false,
+    valid: false,
+    warning: '',
+    error: ''
+  }
+}
+
+function createEmptyValidationState() {
+  return {
+    criteria: createEmptyValidation(),
+    assessment: createEmptyValidation()
+  }
+}
+
 function getFriendlyErrorMessage(errorCode) {
   switch (errorCode) {
     case 'NO_API_KEY':
@@ -37,6 +57,10 @@ function getFriendlyErrorMessage(errorCode) {
       return 'Could not read the AI response. Please try again.'
     case 'TIMEOUT':
       return 'Request timed out. Please try again.'
+    case 'UNKNOWN_ERROR':
+      return 'Network error. Please check your connection and try again.'
+    case 'OPENAI_API_ERROR':
+      return 'OpenAI request failed. Please try again.'
     default:
       return `Something went wrong: ${errorCode}`
   }
@@ -137,6 +161,38 @@ function formatRecommendationLabel(recommendation) {
   }
 }
 
+function getFileValidationMessage(validation) {
+  if (!validation?.checked) {
+    return ''
+  }
+
+  if (validation.error) {
+    return validation.error
+  }
+
+  if (validation.warning) {
+    return validation.warning
+  }
+
+  return 'Validated .docx file ✓'
+}
+
+function getFileValidationTone(validation) {
+  if (!validation?.checked) {
+    return ''
+  }
+
+  if (validation.error) {
+    return 'is-error'
+  }
+
+  if (validation.warning) {
+    return 'is-warning'
+  }
+
+  return 'is-valid'
+}
+
 function buildWordCountReportText(wordCountReport) {
   const sectionsText = (wordCountReport.sections ?? [])
     .map(
@@ -188,6 +244,7 @@ export default function App() {
   const [isLoadingKeyState, setIsLoadingKeyState] = useState(true)
   const [selectedMode, setSelectedMode] = useState('')
   const [selectedFiles, setSelectedFiles] = useState(createEmptySelections)
+  const [fileValidation, setFileValidation] = useState(createEmptyValidationState)
   const [isAnalysing, setIsAnalysing] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -242,7 +299,8 @@ export default function App() {
   }, [isHistoryOpen])
 
   const analysisMode = getAnalysisMode(selectedMode)
-  const areFilesReady = Boolean(selectedFiles.criteria.path && selectedFiles.assessment.path)
+  const areFilesValid = fileValidation.criteria.valid && fileValidation.assessment.valid
+  const areFilesReady = Boolean(selectedFiles.criteria.path && selectedFiles.assessment.path) && areFilesValid
   const isAnalysisDisabled = isLoadingKeyState || isAnalysing || !selectedMode || !areFilesReady || !hasKey
   const isTeacherReportVisible = analysisMode === 'teacher' && Boolean(analysisResult)
   const isWordCountReportVisible = analysisMode === 'wordCount' && Boolean(analysisResult)
@@ -287,6 +345,7 @@ export default function App() {
   function handleModeSelect(modeId) {
     if (selectedMode !== modeId) {
       setSelectedFiles(createEmptySelections())
+      setFileValidation(createEmptyValidationState())
       clearAnalysisOutput()
     }
 
@@ -305,6 +364,8 @@ export default function App() {
         return
       }
 
+      const validationResult = await window.api.validateFile(result.filePath)
+
       setSelectedFiles((currentFiles) => ({
         ...currentFiles,
         [slot]: {
@@ -312,6 +373,16 @@ export default function App() {
           name: result.fileName
         }
       }))
+      setFileValidation((currentValidation) => ({
+        ...currentValidation,
+        [slot]: {
+          checked: true,
+          valid: Boolean(validationResult.valid),
+          warning: validationResult.warning || '',
+          error: validationResult.error || ''
+        }
+      }))
+      setErrorMessage('')
       clearAnalysisOutput()
     } catch (error) {
       console.error('Unable to open document picker', error)
@@ -323,11 +394,38 @@ export default function App() {
     setIsHistoryOpen(false)
     setSelectedMode('')
     setSelectedFiles(createEmptySelections())
+    setFileValidation(createEmptyValidationState())
     setLoadingMessage('')
     setIsAnalysing(false)
     setIsExportingPDF(false)
     clearAnalysisOutput()
   }
+
+  useEffect(() => {
+    if (!window.api.onShortcut) {
+      return undefined
+    }
+
+    return window.api.onShortcut((action) => {
+      if (isAnalysing) {
+        return
+      }
+
+      if (action === 'open-settings') {
+        setIsSettingsOpen(true)
+        return
+      }
+
+      if (action === 'new-analysis') {
+        handleNewAnalysis()
+        return
+      }
+
+      if (action === 'toggle-history') {
+        setIsHistoryOpen((isOpen) => !isOpen)
+      }
+    })
+  }, [isAnalysing])
 
   async function handleExportPDF() {
     setReportActionMessage('')
@@ -390,6 +488,7 @@ export default function App() {
         criteria: { path: '', name: item.criteriaFileName },
         assessment: { path: '', name: item.assessmentFileName }
       })
+      setFileValidation(createEmptyValidationState())
       setCriteriaDoc(null)
       setAssessmentDoc(null)
       setAnalysisResult(response.result)
@@ -437,8 +536,13 @@ export default function App() {
       return
     }
 
-    if (!selectedMode || !areFilesReady) {
+    if (!selectedMode || !selectedFiles.criteria.path || !selectedFiles.assessment.path) {
       setErrorMessage('Something went wrong: Please select both .docx files before analysing.')
+      return
+    }
+
+    if (!areFilesValid) {
+      setErrorMessage('Please choose two valid .docx files before analysing.')
       return
     }
 
@@ -459,6 +563,10 @@ export default function App() {
         images: nextCriteriaDoc.images
       }
 
+      if ((normalizedCriteriaDoc.markdown ?? '').trim().length < 100) {
+        throw new Error(EMPTY_DOCUMENT_ERROR)
+      }
+
       setCriteriaDoc(normalizedCriteriaDoc)
 
       setLoadingMessage('Reading assessment document...')
@@ -474,7 +582,24 @@ export default function App() {
         images: nextAssessmentDoc.images
       }
 
+      if ((normalizedAssessmentDoc.markdown ?? '').trim().length < 100) {
+        throw new Error(EMPTY_DOCUMENT_ERROR)
+      }
+
       setAssessmentDoc(normalizedAssessmentDoc)
+
+      const totalImageCount =
+        (normalizedCriteriaDoc.images?.length ?? 0) + (normalizedAssessmentDoc.images?.length ?? 0)
+
+      if (totalImageCount > 5) {
+        const shouldContinue = window.confirm(
+          `This assessment contains ${totalImageCount} images. Analysis may take longer and use more API tokens. Continue?`
+        )
+
+        if (!shouldContinue) {
+          return
+        }
+      }
 
       setLoadingMessage('Analysing with AI...')
       const analysisResponse = await window.api.analyseAssessment(
@@ -598,6 +723,11 @@ export default function App() {
                   <span className={`file-row-value${selectedFiles.criteria.name ? ' has-file' : ''}`}>
                     {selectedFiles.criteria.name || 'Click to select .docx file'}
                   </span>
+                  {getFileValidationMessage(fileValidation.criteria) ? (
+                    <span className={`file-row-meta ${getFileValidationTone(fileValidation.criteria)}`}>
+                      {getFileValidationMessage(fileValidation.criteria)}
+                    </span>
+                  ) : null}
                 </button>
 
                 <button
@@ -610,6 +740,11 @@ export default function App() {
                   <span className={`file-row-value${selectedFiles.assessment.name ? ' has-file' : ''}`}>
                     {selectedFiles.assessment.name || 'Click to select .docx file'}
                   </span>
+                  {getFileValidationMessage(fileValidation.assessment) ? (
+                    <span className={`file-row-meta ${getFileValidationTone(fileValidation.assessment)}`}>
+                      {getFileValidationMessage(fileValidation.assessment)}
+                    </span>
+                  ) : null}
                 </button>
               </div>
             </section>
@@ -651,13 +786,17 @@ export default function App() {
         onDeleteEntry={handleDeleteHistoryEntry}
       />
 
-      <DebugPanel
-        criteriaFile={selectedFiles.criteria}
-        criteriaDoc={criteriaDoc}
-        assessmentDoc={assessmentDoc}
-        analysisResult={analysisResult}
-        errorMessage={errorMessage}
-      />
+	      {DebugPanel ? (
+	        <Suspense fallback={null}>
+	          <DebugPanel
+	            criteriaFile={selectedFiles.criteria}
+	            criteriaDoc={criteriaDoc}
+	            assessmentDoc={assessmentDoc}
+	            analysisResult={analysisResult}
+	            errorMessage={errorMessage}
+	          />
+	        </Suspense>
+	      ) : null}
 
       {isAnalysing ? (
         <div className="loading-overlay" aria-live="polite" aria-busy="true">

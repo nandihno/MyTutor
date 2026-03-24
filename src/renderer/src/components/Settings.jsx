@@ -7,6 +7,7 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
   const [isRemoving, setIsRemoving] = useState(false)
   const [showReplaceForm, setShowReplaceForm] = useState(false)
   const [error, setError] = useState('')
+  const [statusMessage, setStatusMessage] = useState('')
 
   useEffect(() => {
     setIsConfigured(hasKey)
@@ -30,6 +31,7 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
         setIsConfigured(exists)
         setShowReplaceForm(false)
         setError('')
+        setStatusMessage('')
         onKeyStateChange(exists)
       } catch (refreshError) {
         if (!isActive) {
@@ -55,12 +57,31 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
 
     setIsSaving(true)
     setError('')
+    setStatusMessage('')
 
     try {
-      await window.api.saveAPIKey(key)
+      const response = await window.api.saveAPIKey(key)
+
+      if (!response?.success) {
+        switch (response?.error) {
+          case 'INVALID_API_KEY':
+            setError('Key appears invalid.')
+            break
+          case 'TIMEOUT':
+          case 'NETWORK_ERROR':
+            setError('Could not verify the key. Check your internet connection and try again.')
+            break
+          default:
+            setError('Could not verify this API key. Please try again.')
+        }
+
+        return
+      }
+
       setKey('')
       setIsConfigured(true)
       setShowReplaceForm(false)
+      setStatusMessage('Key verified ✓')
       onKeyStateChange(true)
     } catch (saveError) {
       setError(saveError.message)
@@ -78,12 +99,14 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
 
     setIsRemoving(true)
     setError('')
+    setStatusMessage('')
 
     try {
       await window.api.deleteAPIKey()
       setKey('')
       setIsConfigured(false)
       setShowReplaceForm(false)
+      setStatusMessage('')
       onKeyStateChange(false)
     } catch (removeError) {
       setError(removeError.message)
@@ -134,7 +157,7 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
               className="settings-input"
               type="password"
               value={key}
-              placeholder="sk-..."
+              placeholder="Enter your OpenAI API key"
               autoComplete="off"
               onChange={(event) => setKey(event.target.value)}
             />
@@ -156,6 +179,7 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
                     setShowReplaceForm(false)
                     setKey('')
                     setError('')
+                    setStatusMessage('')
                   }}
                 >
                   Cancel
@@ -170,11 +194,12 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => {
-                  setShowReplaceForm(true)
-                  setError('')
-                }}
-              >
+                  onClick={() => {
+                    setShowReplaceForm(true)
+                    setError('')
+                    setStatusMessage('')
+                  }}
+                >
                 Replace
               </button>
               <button
@@ -190,6 +215,7 @@ export default function Settings({ isOpen, hasKey, onClose, onKeyStateChange }) 
         )}
 
         {error ? <p className="settings-error">{error}</p> : null}
+        {statusMessage ? <p className="settings-success">{statusMessage}</p> : null}
       </aside>
     </div>
   )
